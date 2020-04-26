@@ -1,0 +1,223 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "adminUsername": {
+      "type": "string",
+      "defaultValue": "xadmin",
+      "metadata": {
+        "description": "Admin username"
+      }
+    },
+    "adminPassword": {
+      "type": "securestring",
+      "metadata": {
+        "description": "Admin password"
+      }
+    },
+    "location": {
+      "type": "string",
+      "defaultValue": "[resourceGroup().location]",
+      "metadata": {
+        "description": "Location for all resources."
+      }
+    },
+    "environment": {
+      "type": "string",
+      "metadata": {
+        "description": "The environment to deploy the resources."
+      }
+    },
+    "vnetName": {
+      "type": "string",
+      "metadata": {
+        "description": "vName of the existing virtual network to deploy the scale set into."
+      }
+    },
+    "virtualNetworkResourceGroup": {
+      "type": "string",
+      "metadata": {
+        "description": "vName of the existing virtual network to deploy the scale set into."
+      }
+    },
+    "subnetName": {
+      "type": "string",
+      "metadata": {
+        "description": "Name of the existing subnet to deploy the scale set into."
+      }
+    },
+    "domainJoinUserName": {
+      "type": "string",
+      "metadata": {
+        "description": "Domain NetBiosName plus User name of a domain user with sufficient rights to perfom domain join operation. E.g. domain\\username"
+      }
+    },
+    "domainJoinUserPassword": {
+      "type": "securestring",
+      "metadata": {
+        "description": "Domain user password"
+      }
+    },
+    "domainFQDN": {
+      "type": "string",
+      "defaultValue": "phx.gbl",
+      "metadata": {
+        "description": "Domain FQDN where the virtual machine will be joined"
+      }
+    },
+    "ouPath": {
+      "type": "string",
+      "defaultValue": "OU=BLU;OU=TS;OU=MSG-GCC;OU=RESOURCE;OU=PRODUCTION;DC=phx,DC=gbl",
+      "metadata": {
+        "description": "Specifies an organizational unit (OU) for the domain account. Enter the full distinguished name of the OU in quotation marks. Example: \"OU=testOU; DC=domain; DC=Domain; DC=com\""
+      }
+    },
+    "imageName": {
+      "type": "string",
+      "metadata": {
+        "description": "The custom Azure image to deploy to for the Session Hosts servers."
+      }
+    },
+    "imageResourceGroup": {
+      "type": "string",
+      "metadata": {
+        "description": "The custom Azure image resource group."
+      }
+    },
+    "shCount": {
+      "type": "int",
+      "defaultValue": 3,
+      "metadata": {
+        "description": "Specifies the number of session hosts to create"
+      }
+    },
+    "HwSize": {
+      "type": "string",
+      "defaultValue": "Standard_DS3_V2",
+      "metadata": {
+        "description": "The Azure VM Size."
+      }
+    }
+  },
+  "variables": {
+    "ShNamePrefix": "[concat('LENS',parameters('Environment'),'RDSSH0')]",
+    "rdshAvailabilitySetName": "AvSetRDSH01",
+    "subnetRef": "[resourceId(parameters('virtualNetworkResourceGroup'),'Microsoft.Network/virtualNetworks/subnets', parameters('VnetName'), parameters('subnetName'))]",
+    "domainJoinOptions": 3
+  },
+  "resources": [
+    {
+      "apiVersion": "2018-04-01",
+      "type": "Microsoft.Compute/availabilitySets",
+      "location": "[parameters('location')]",
+      "name": "[variables('rdshAvailabilitySetName')]",
+      "properties": {
+        "PlatformUpdateDomainCount": 2,
+        "PlatformFaultDomainCount": 2
+      },
+      "sku": {
+        "name": "Aligned"
+      }
+    },
+    {
+      "apiVersion": "2018-04-01",
+      "type": "Microsoft.Network/networkInterfaces",
+      "name": "[concat(variables('shNamePrefix'), copyindex(1),'NIC')]",
+      "location": "[parameters('location')]",
+      "copy": {
+        "name": "nicLoop",
+        "count": "[parameters('shCount')]"
+      },
+      "dependsOn": [
+      ],
+      "properties": {
+        "ipConfigurations": [
+          {
+            "name": "ipconfig1",
+            "properties": {
+              "privateIPAllocationMethod": "Dynamic",
+              "subnet": {
+                "id": "[variables('subnetRef')]"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "2018-04-01",
+      "type": "Microsoft.Compute/virtualMachines",
+      "name": "[concat(variables('shNamePrefix'),copyindex(1))]",
+      "copy": {
+        "name": "virtualMachineLoop",
+        "count": "[parameters('shCount')]"
+      },
+      "location": "[parameters('location')]",
+      "dependsOn": [
+        "nicLoop"
+      ],
+      "properties": {
+        "availabilitySet": {
+          "id": "[resourceId('Microsoft.Compute/availabilitySets',variables('rdshavailabilitySetName'))]"
+        },
+        "hardwareProfile": {
+          "vmSize": "[parameters('HwSize')]"
+        },
+        "osProfile": {
+          "computerName": "[concat(variables('shNamePrefix'), copyIndex(1))]",
+          "adminUsername": "[parameters('adminUsername')]",
+          "adminPassword": "[parameters('adminPassword')]"
+        },
+        "storageProfile": {
+          "imageReference": {
+            "id": "[resourceId(parameters('imageResourceGroup'),'Microsoft.Compute/images', parameters('imageName'))]"
+          },
+          "osDisk": {
+            "osType": "Windows",
+            "createOption": "FromImage",
+            "managedDisk": {
+              "storageAccountType":"StandardSSD_LRS"
+            }
+          }
+        },
+        "networkProfile": {
+          "networkInterfaces": [
+            {
+              "id": "[resourceId('Microsoft.Network/networkInterfaces', concat(variables('shNamePrefix'), copyindex(1),'NIC'))]"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "comments": "Join domain - JsonADDomainExtension",
+      "apiVersion": "2015-06-15",
+      "type": "Microsoft.Compute/virtualMachines/extensions",
+      "name": "[concat(variables('ShNamePrefix'),copyIndex(1),'/JoinDomain')]",
+      "location": "[parameters('location')]",
+      "copy": {
+        "name": "ShDomainJoinCopy",
+          "count": "[parameters('shCount')]"
+      },
+      "dependsOn": [ 
+        "[concat(variables('ShNamePrefix'), copyindex(1))]"
+      ],
+      "properties": {
+        "publisher": "Microsoft.Compute",
+        "type": "JsonADDomainExtension",
+        "typeHandlerVersion": "1.3",
+        "autoUpgradeMinorVersion": true,
+        "settings": {
+          "Name": "[parameters('domainFQDN')]",
+          "User": "[parameters('domainJoinUserName')]",
+          "Restart": "true",
+          "Options": "[variables('domainJoinOptions')]",
+          "OUPath": "[parameters('ouPath')]"
+        },
+        "protectedSettings": {
+          "Password": "[parameters('domainJoinUserPassword')]"
+        }
+      }
+    }
+  ]
+}
